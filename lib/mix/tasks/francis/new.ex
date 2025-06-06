@@ -50,6 +50,30 @@ defmodule Mix.Tasks.Francis.New do
   erl_crash.dump
   """
 
+  @config_template """
+  import Config
+
+  import_config "\#{config_env()}.exs"
+  """
+
+  @dev_config_template """
+  import Config
+
+  config :<%= app_name %>, watcher: true
+  """
+
+  @prod_config_template """
+  import Config
+
+  config :<%= app_name %>, watcher: false
+  """
+
+  @test_config_template """
+  import Config
+
+  config :<%= app_name %>, watcher: false
+  """
+
   @with_sup_app_template """
   defmodule <%= Macro.camelize(module_name) %> do
     use Application
@@ -117,33 +141,64 @@ defmodule Mix.Tasks.Francis.New do
     {sup, supervisor_module_name} =
       OptionParser.parse!(opts, strict: [sup: :boolean, supervisor_module_name: :string])
 
-    File.mkdir_p!(app_name)
+    Mix.Generator.create_directory(app_name)
 
     module_name =
       if supervisor_module_name == [],
         do: app_name,
         else: hd(supervisor_module_name)
 
-    # Copy and render templates
-    copy_template(:mix, "#{app_name}/mix.exs", %{module_name: module_name, app_name: app_name})
-    copy_template(:gitignore, "#{app_name}/.gitignore", %{})
+    copy_template(:mix, Path.join(app_name, "mix.exs"), %{
+      module_name: module_name,
+      app_name: app_name
+    })
 
-    File.mkdir_p!("#{app_name}/lib")
+    copy_template(:gitignore, Path.join(app_name, ".gitignore"), %{})
+
+    Mix.Generator.create_directory(Path.join(app_name, "lib"))
+
+    # Create config directory and config files
+    config_dir = Path.join(app_name, "config")
+    Mix.Generator.create_directory(config_dir)
+    copy_template(:config, Path.join(config_dir, "config.exs"), %{app_name: app_name})
+    copy_template(:dev_config, Path.join(config_dir, "dev.exs"), %{app_name: app_name})
+    copy_template(:prod_config, Path.join(config_dir, "prod.exs"), %{app_name: app_name})
+    copy_template(:test_config, Path.join(config_dir, "test.exs"), %{app_name: app_name})
 
     if sup != [] && hd(sup) do
-      copy_template(:with_sup_app, "#{app_name}/lib/application.ex", %{module_name: module_name})
-      copy_template(:with_sup_router, "#{app_name}/lib/router.ex", %{module_name: module_name})
+      copy_template(:with_sup_app, Path.join([app_name, "lib", "application.ex"]), %{
+        module_name: module_name
+      })
+
+      copy_template(:with_sup_router, Path.join([app_name, "lib", "router.ex"]), %{
+        module_name: module_name
+      })
     else
-      copy_template(:without_sup_app, "#{app_name}/lib/#{app_name}.ex", %{
+      copy_template(:without_sup_app, Path.join([app_name, "lib", "#{app_name}.ex"]), %{
         module_name: module_name
       })
     end
+
+    Mix.shell().info("\nYour Francis project is ready!\n\nNext steps to start your project:")
+    Mix.shell().info("\n\tcd #{app_name}\n\tmix deps.get\n\tmix francis.server\n")
   end
 
   defp copy_template(:mix, dest, assigns), do: write_template(@mix_template, dest, assigns)
 
   defp copy_template(:gitignore, dest, assigns),
     do: write_template(@gitignore_template, dest, assigns)
+
+  defp copy_template(:config, dest, assigns),
+    do: write_template(@config_template, dest, assigns)
+
+  defp copy_template(:dev_config, dest, assigns),
+    do: write_template(@dev_config_template, dest, assigns)
+
+  defp copy_template(:prod_config, dest, assigns),
+    do: write_template(@prod_config_template, dest, assigns)
+
+  defp copy_template(:test_config, dest, assigns),
+    do: write_template(@test_config_template, dest, assigns)
 
   defp copy_template(:with_sup_app, dest, assigns),
     do: write_template(@with_sup_app_template, dest, assigns)
@@ -158,6 +213,6 @@ defmodule Mix.Tasks.Francis.New do
     # Make Macro available in the template context and merge assigns
     bindings = [Macro: Macro] ++ Map.to_list(assigns)
     rendered = EEx.eval_string(template, bindings)
-    File.write!(dest, rendered)
+    Mix.Generator.create_file(dest, rendered)
   end
 end
