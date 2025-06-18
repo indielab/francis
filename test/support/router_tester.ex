@@ -7,13 +7,17 @@ defmodule Support.RouteTester do
     plugs = Keyword.get(opts, :plugs, [])
     static = Keyword.get(opts, :static)
     parser = Keyword.get(opts, :parser)
+    bandit_opts = Keyword.get(opts, :bandit_opts, [])
+    error_handler = Keyword.get(opts, :error_handler)
 
     content =
       quote do
         use Francis,
           plugs: unquote(plugs),
           static: unquote(static),
-          parser: unquote(parser)
+          parser: unquote(parser),
+          bandit_opts: unquote(bandit_opts),
+          error_handler: unquote(error_handler)
 
         unquote(handlers)
       end

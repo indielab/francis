@@ -14,12 +14,13 @@ defmodule Francis do
           json_decoder: Jason
         )
         ```
+    * Defines a default error handler that returns a 500 status code and a generic error message. You can override this by passing the function name on `:error_handler` option to the `use Francis` macro which will override the default error handler.
 
   You can also set the following options:
     * :bandit_opts - Options to be passed to Bandit
-    * :plugs - List of plugs to be used by Francis
     * :static - Configure Plug.Static to serve static files
     * :parser - Overrides the default configuration for Plug.Parsers
+    * :error_handler - Defines a custom error handler for the server
   """
   import Plug.Conn
 
@@ -27,11 +28,26 @@ defmodule Francis do
     quote location: :keep do
       use Application
 
+      use Plug.ErrorHandler
+      use Francis.Plug.Router
+      require Logger
+
       def start, do: start(nil, nil)
 
+      static = Keyword.get(unquote(opts), :static)
+      parser = Keyword.get(unquote(opts), :parser)
+
+      if static, do: plug(Plug.Static, static)
+
+      if parser,
+        do: plug(Plug.Parsers, parser),
+        else: plug(Plug.Parsers, parsers: [:urlencoded, :multipart, :json], json_decoder: Jason)
+
+      plug(Plug.Head)
+
       def start(_type, _args) do
-        watcher_spec =
-          if Application.get_env(:francis, :watcher, false), do: [{Francis.Watcher, []}], else: []
+        dev = Application.get_env(:francis, :dev, false)
+        watcher_spec = if dev, do: [{Francis.Watcher, []}], else: []
 
         children =
           [
@@ -40,6 +56,8 @@ defmodule Francis do
 
         Supervisor.start_link(children, strategy: :one_for_one)
       end
+
+      defoverridable(start: 2)
 
       def child_spec(opts) do
         %{
@@ -51,8 +69,6 @@ defmodule Francis do
           modules: [__MODULE__]
         }
       end
-
-      defoverridable(start: 2)
 
       @spec handle_response(
               (Plug.Conn.t() -> binary() | map() | Plug.Conn.t()),
@@ -74,31 +90,55 @@ defmodule Francis do
             |> put_resp_content_type("application/json")
             |> send_resp(status, Jason.encode!(res))
             |> halt()
+
+          {:error, res} ->
+            handle_errors(conn, {:error, res})
         end
+      rescue
+        e -> handle_errors(conn, e)
       end
 
-      use Francis.Plug.Router
-      static = Keyword.get(unquote(opts), :static)
-      if static, do: plug(Plug.Static, static)
-      parser = Keyword.get(unquote(opts), :parser)
+      @doc """
+      Redirects the connection to the specified path with a 302 status code.
+      You can specify a different status code by passing the `:status` option.
+      ## Examples
 
-      plug(:match)
+      ```
+      redirect(conn, "/new_path")
+      redirect(conn, "/new_path", status: 301)
+      ```
 
-      if parser do
-        plug(Plug.Parsers, parser)
-      else
-        plug(Plug.Parsers,
-          parsers: [:urlencoded, :multipart, :json],
-          json_decoder: Jason
-        )
+      """
+      @spec redirect(Plug.Conn.t(), String.t(), keyword()) :: Plug.Conn.t()
+      def redirect(conn, path, opts \\ []) do
+        status = Keyword.get(opts, :status, 302)
+
+        conn
+        |> put_resp_header("location", path)
+        |> send_resp(status, "")
+        |> halt()
       end
 
-      Enum.each(Keyword.get(unquote(opts), :plugs, []), fn
-        plug when is_atom(plug) -> plug(plug)
-        {plug, opts} when is_atom(plug) -> plug(plug, opts)
-      end)
+      @spec handle_errors(Plug.Conn.t(), any()) :: Plug.Conn.t()
+      @impl true
+      def handle_errors(conn, reason) do
+        case Keyword.get(unquote(opts), :error_handler) do
+          nil ->
+            Logger.error("Unhandled error: #{inspect(reason)}")
 
-      plug(:dispatch)
+            conn
+            |> put_status(500)
+            |> send_resp(500, "Internal Server Error")
+            |> halt()
+
+          handler ->
+            Keyword.get(unquote(opts), :error_handler).(conn, reason)
+        end
+      rescue
+        e ->
+          Logger.error("Error occurred: #{inspect(e)}")
+          send_resp(conn, 500, "Internal Server Error")
+      end
     end
   end
 
@@ -120,7 +160,6 @@ defmodule Francis do
   @spec get(String.t(), (Plug.Conn.t() -> binary() | map() | Plug.Conn.t())) :: Macro.t()
   defmacro get(path, handler) do
     quote location: :keep do
-      Plug.Router.head(unquote(path), do: handle_response(unquote(handler), var!(conn)))
       Plug.Router.get(unquote(path), do: handle_response(unquote(handler), var!(conn)))
     end
   end
