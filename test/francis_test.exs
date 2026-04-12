@@ -486,9 +486,13 @@ defmodule FrancisTest do
       # Use a short interval for testing (500ms)
       handler =
         quote do
-          ws(unquote(path), fn {:received, message}, _socket ->
-            {:reply, message}
-          end, heartbeat_interval: 500)
+          ws(
+            unquote(path),
+            fn {:received, message}, _socket ->
+              {:reply, message}
+            end,
+            heartbeat_interval: 500
+          )
         end
 
       bandit_opts = [port: port]
@@ -520,9 +524,13 @@ defmodule FrancisTest do
 
       handler =
         quote do
-          ws(unquote(path), fn {:received, message}, _socket ->
-            {:reply, message}
-          end, heartbeat_interval: 500)
+          ws(
+            unquote(path),
+            fn {:received, message}, _socket ->
+              {:reply, message}
+            end,
+            heartbeat_interval: 500
+          )
         end
 
       bandit_opts = [port: port]
@@ -556,9 +564,13 @@ defmodule FrancisTest do
 
       handler =
         quote do
-          ws(unquote(path), fn {:received, message}, _socket ->
-            {:reply, message}
-          end, heartbeat_interval: nil)
+          ws(
+            unquote(path),
+            fn {:received, message}, _socket ->
+              {:reply, message}
+            end,
+            heartbeat_interval: nil
+          )
         end
 
       bandit_opts = [port: port]
@@ -626,9 +638,13 @@ defmodule FrancisTest do
 
       handler =
         quote do
-          ws(unquote(path), fn {:received, message}, _socket ->
-            {:reply, "echo: #{message}"}
-          end, heartbeat_interval: 500)
+          ws(
+            unquote(path),
+            fn {:received, message}, _socket ->
+              {:reply, "echo: #{message}"}
+            end,
+            heartbeat_interval: 500
+          )
         end
 
       bandit_opts = [port: port]
@@ -674,17 +690,31 @@ defmodule FrancisTest do
       assert response.headers["location"] == ["/new_path"]
     end
 
-    test "redirects to the given URL" do
+    test "rejects absolute URLs to prevent open redirects" do
       handler =
         quote do
           get("/", fn conn -> redirect(conn, "http://example.com/new_path") end)
         end
 
       mod = Support.RouteTester.generate_module(handler)
+      response = Req.get!("/", plug: mod, redirect: false, retry: false)
+
+      # The ArgumentError is caught by handle_errors, resulting in 500
+      assert response.status == 500
+    end
+
+    test "rejects protocol-relative URLs" do
+      handler =
+        quote do
+          get("/", fn conn -> redirect(conn, "//evil.com/phish") end)
+        end
+
+      mod = Support.RouteTester.generate_module(handler)
       response = Req.get!("/", plug: mod, redirect: false)
 
+      # Protocol-relative URLs starting with // are normalized to "/"
       assert response.status == 302
-      assert response.headers["location"] == ["http://example.com/new_path"]
+      assert response.headers["location"] == ["/"]
     end
   end
 
@@ -702,17 +732,17 @@ defmodule FrancisTest do
       assert response.headers["location"] == ["/new_path"]
     end
 
-    test "redirects to the given URL with custom status" do
+    test "rejects absolute URLs with custom status" do
       handler =
         quote do
           get("/", fn conn -> redirect(conn, 301, "http://example.com/new_path") end)
         end
 
       mod = Support.RouteTester.generate_module(handler)
-      response = Req.get!("/", plug: mod, redirect: false)
+      response = Req.get!("/", plug: mod, redirect: false, retry: false)
 
-      assert response.status == 301
-      assert response.headers["location"] == ["http://example.com/new_path"]
+      # The ArgumentError is caught by handle_errors, resulting in 500
+      assert response.status == 500
     end
   end
 
@@ -808,6 +838,18 @@ defmodule FrancisTest do
       assert response.headers["content-type"] == ["text/html; charset=utf-8"]
       assert response.body == "<h1>Hello, World!</h1>"
     end
+
+    test "sets cache-control header" do
+      handler =
+        quote do
+          get("/", fn conn -> html(conn, "<h1>Hello</h1>") end)
+        end
+
+      mod = Support.RouteTester.generate_module(handler)
+      response = Req.get!("/", plug: mod)
+
+      assert response.headers["cache-control"] == ["no-cache, no-store, must-revalidate"]
+    end
   end
 
   describe "html/3" do
@@ -823,6 +865,74 @@ defmodule FrancisTest do
       assert response.status == 201
       assert response.headers["content-type"] == ["text/html; charset=utf-8"]
       assert response.body == "<h1>Hello, World!</h1>"
+    end
+
+    test "sets cache-control header" do
+      handler =
+        quote do
+          get("/", fn conn -> html(conn, 201, "<h1>Hello</h1>") end)
+        end
+
+      mod = Support.RouteTester.generate_module(handler)
+      response = Req.get!("/", plug: mod)
+
+      assert response.headers["cache-control"] == ["no-cache, no-store, must-revalidate"]
+    end
+  end
+
+  describe "safe_html/2" do
+    test "returns an HTML response with 200 status and escapes content" do
+      handler =
+        quote do
+          get("/", fn conn -> safe_html(conn, "<script>alert('xss')</script>") end)
+        end
+
+      mod = Support.RouteTester.generate_module(handler)
+      response = Req.get!("/", plug: mod)
+
+      assert response.status == 200
+      assert response.headers["content-type"] == ["text/html; charset=utf-8"]
+      assert response.body == "&lt;script&gt;alert(&#39;xss&#39;)&lt;/script&gt;"
+    end
+
+    test "sets cache-control header" do
+      handler =
+        quote do
+          get("/", fn conn -> safe_html(conn, "Hello") end)
+        end
+
+      mod = Support.RouteTester.generate_module(handler)
+      response = Req.get!("/", plug: mod)
+
+      assert response.headers["cache-control"] == ["no-cache, no-store, must-revalidate"]
+    end
+  end
+
+  describe "safe_html/3" do
+    test "returns an HTML response with custom status and escapes content" do
+      handler =
+        quote do
+          get("/", fn conn -> safe_html(conn, 201, "<b>bold & \"quoted\"</b>") end)
+        end
+
+      mod = Support.RouteTester.generate_module(handler)
+      response = Req.get!("/", plug: mod)
+
+      assert response.status == 201
+      assert response.headers["content-type"] == ["text/html; charset=utf-8"]
+      assert response.body == "&lt;b&gt;bold &amp; &quot;quoted&quot;&lt;/b&gt;"
+    end
+
+    test "sets cache-control header" do
+      handler =
+        quote do
+          get("/", fn conn -> safe_html(conn, 201, "Hello") end)
+        end
+
+      mod = Support.RouteTester.generate_module(handler)
+      response = Req.get!("/", plug: mod)
+
+      assert response.headers["cache-control"] == ["no-cache, no-store, must-revalidate"]
     end
   end
 
@@ -844,7 +954,7 @@ defmodule FrancisTest do
         quote do
           plug(Support.PlugTester, to_assign: "plug1")
           plug(Support.PlugTester, to_assign: "plug2")
-          get("/", fn %{assigns: %{plug_assgined: plug_assgined}} -> plug_assgined end)
+          get("/", fn %{assigns: %{plug_assigned: plug_assigned}} -> plug_assigned end)
         end
 
       mod = Support.RouteTester.generate_module(handler)
@@ -929,7 +1039,7 @@ defmodule FrancisTest do
         capture_log(fn ->
           response = Req.get!("/", plug: mod, retry: false)
           assert response.status == 500
-          assert response.body == "Internal Server Error"
+          assert response.body =~ "Internal Server Error"
         end)
 
       assert log =~ "Unhandled error: {:error, :fail}"
@@ -972,7 +1082,7 @@ defmodule FrancisTest do
           response = Req.get!("/", plug: mod, retry: false)
 
           assert response.status == 500
-          assert response.body == "Internal Server Error"
+          assert response.body =~ "Internal Server Error"
         end)
 
       assert log =~ "Unhandled error: %RuntimeError{message: \"test exception\"}"
@@ -998,7 +1108,7 @@ defmodule FrancisTest do
 
           response = Req.get!("/", plug: mod, retry: false)
           assert response.status == 500
-          assert response.body == "Internal Server Error"
+          assert response.body =~ "Internal Server Error"
         end)
 
       assert log =~ "Unhandled error:"
